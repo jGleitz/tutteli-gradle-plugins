@@ -14,6 +14,7 @@ import org.gradle.kotlin.dsl.*
 import org.gradle.plugins.signing.SigningExtension
 import org.gradle.plugins.signing.SigningPlugin
 import org.jetbrains.dokka.gradle.DokkaTask
+import org.jetbrains.kotlin.gradle.dsl.kotlinExtension
 import java.util.*
 
 class PublishPlugin : Plugin<Project> {
@@ -105,55 +106,64 @@ class PublishPlugin : Plugin<Project> {
     ) {
         val isKotlinMultiPlatform = project.plugins.hasPlugin("org.jetbrains.kotlin.multiplatform")
 
-        project.plugins.findPlugin("org.jetbrains.dokka")?.run {
-            publications.forEach { publication ->
+        project.plugins.findPlugin("org.jetbrains.dokka") ?: return
 
-                // we only add a javadoc-jar if we don't deal with a relocation publication
-                if (!publication.name.endsWith("-relocation")) {
-                    val javadocJar = if (isKotlinMultiPlatform) {
-                        val publicationNameCapitalized = publication.name.replaceFirstChar {
-                            if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
-                        }
-                        val customDokkaHtml =
-                            project.tasks.register<DokkaTask>("dokkaHtml${publicationNameCapitalized}") {
-                                outputDirectory.set(project.layout.buildDirectory.map { it.dir("dokka/${publication.name}") })
-                                dokkaSourceSets.matching {
-                                    // we only want to include the corresponding platform + common
-                                    it.name.startsWith(publication.name).not()
-                                        && it.name.startsWith("common").not()
-                                }.configureEach {
-                                    suppress.set(true)
-                                }
-                            }
+        publications.matching {
+            // we only add a javadoc-jar if we don't deal with a relocation publication
+            !it.name.endsWith("-relocation")
+        }.forEach { publication ->
+            val javadocJar = if (isKotlinMultiPlatform) {
+                val publicationNameCapitalized = publication.name.replaceFirstChar {
+                    if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
+                }
+                val customDokkaHtml =
+                    project.tasks.register<DokkaTask>("dokkaHtml${publicationNameCapitalized}") {
+                        outputDirectory = project.layout.buildDirectory.map { it.dir("dokka/${publication.name}") }
+                        val sourceSetsToInclude =
+                            dokkaSourceSets.names
+                                .filter { it.startsWith(publication.name) && it.endsWith("Main") }
+                                .flatMap { project.sourceSetNameWithDependencies(it) }
+                                .toSet()
 
-                        project.tasks.register<Jar>("javadocJar$publicationNameCapitalized") {
-                            archiveClassifier.set("javadoc")
-                            // otherwise it looks like kotlin overwrites the javadoc.jar it creates within the
-                            // build directory as it only append the js/jvm archiveAppendix during publication
-                            archiveAppendix.set(publication.name)
-                            dependsOn(customDokkaHtml)
-                            doFirst {
-                                from(customDokkaHtml)
-                            }
-                        }
-                    } else {
-                        project.tasks.register<Jar>("javadocJar") {
-                            archiveClassifier.set("javadoc")
-                            val dokkaHtml = project.tasks.named<DokkaTask>("dokkaHtml")
-                            dependsOn(dokkaHtml)
-                            doFirst {
-                                from(dokkaHtml)
-                            }
+                        dokkaSourceSets.configureEach {
+                            suppress = !sourceSetsToInclude.contains(name)
                         }
                     }
-                    if (needToCreateOwnPublication.not()) {
-                        // if we create an own publication, then we add automatically all jars as artifact and
-                        // we don't need to add it here again (otherwise we add the same artifact twice)
-                        publication.artifact(javadocJar)
+
+                project.tasks.register<Jar>("javadocJar$publicationNameCapitalized") {
+                    archiveClassifier.set("javadoc")
+                    // otherwise it looks like kotlin overwrites the javadoc.jar it creates within the
+                    // build directory as it only append the js/jvm archiveAppendix during publication
+                    archiveAppendix.set(publication.name)
+                    dependsOn(customDokkaHtml)
+                    doFirst {
+                        from(customDokkaHtml)
+                    }
+                }
+            } else {
+                project.tasks.register<Jar>("javadocJar") {
+                    archiveClassifier.set("javadoc")
+                    val dokkaHtml = project.tasks.named<DokkaTask>("dokkaHtml")
+                    dependsOn(dokkaHtml)
+                    doFirst {
+                        from(dokkaHtml)
                     }
                 }
             }
+            if (needToCreateOwnPublication.not()) {
+                // if we create an own publication, then we add automatically all jars as artifact and
+                // we don't need to add it here again (otherwise we add the same artifact twice)
+                publication.artifact(javadocJar)
+            }
         }
+    }
+
+    private fun Project.sourceSetNameWithDependencies(sourceSetName: String): Set<String> {
+        val dependentSourceSetNames = kotlinExtension.sourceSets
+            .getByName(sourceSetName)
+            .dependsOn
+            .flatMap { sourceSetNameWithDependencies(it.name) }
+        return setOf(sourceSetName, *dependentSourceSetNames.toTypedArray())
     }
 
     private fun getMavenPublications(project: Project): NamedDomainObjectCollection<MavenPublication> =

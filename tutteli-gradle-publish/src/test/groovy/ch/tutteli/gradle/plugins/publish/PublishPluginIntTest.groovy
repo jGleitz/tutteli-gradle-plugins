@@ -5,9 +5,7 @@ import ch.tutteli.gradle.plugins.test.SettingsExtension
 import ch.tutteli.gradle.plugins.test.SettingsExtensionObject
 import groovy.io.FileType
 import org.gradle.api.JavaVersion
-import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
-import org.gradle.testkit.runner.UnexpectedBuildFailure
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 
@@ -18,12 +16,13 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
 import static ch.tutteli.gradle.plugins.test.Asserts.*
+import static java.nio.charset.StandardCharsets.UTF_8
 import static org.junit.jupiter.api.Assertions.*
 import static org.junit.jupiter.api.Assumptions.assumeFalse
 
 @ExtendWith(SettingsExtension)
 class PublishPluginIntTest {
-    def static final KOTLIN_VERSION = '1.8.22'
+    def static final KOTLIN_VERSION = '2.0.21'
     def static final ATRIUM_VERSION = '1.0.0'
 
     @Test
@@ -341,7 +340,7 @@ class PublishPluginIntTest {
             "</dependency>$NL_INDENT" +
             "<dependency>$NL_INDENT" +
             "<groupId>org.jetbrains.kotlin</groupId>$NL_INDENT" +
-            "<artifactId>kotlin-stdlib-jdk8</artifactId>$NL_INDENT" +
+            "<artifactId>kotlin-stdlib</artifactId>$NL_INDENT" +
             "<version>$KOTLIN_VERSION</version>$NL_INDENT" +
             "<scope>compile</scope>$NL_INDENT" +
             "</dependency>$NL_INDENT" + runtimeDependency
@@ -475,7 +474,7 @@ class PublishPluginIntTest {
         assertContainsRegex(pom, "dependencies", "<dependencies>$NL_INDENT" +
             "<dependency>$NL_INDENT" +
             "<groupId>org.jetbrains.kotlin</groupId>$NL_INDENT" +
-            "<artifactId>kotlin-stdlib-jdk8</artifactId>$NL_INDENT" +
+            "<artifactId>kotlin-stdlib</artifactId>$NL_INDENT" +
             "<version>$KOTLIN_VERSION</version>$NL_INDENT" +
             "<scope>compile</scope>$NL_INDENT" +
             "</dependency>$NL_INDENT" +
@@ -538,8 +537,6 @@ class PublishPluginIntTest {
         settingsSetup.gpgKeyRing << PublishPluginIntTest.class.getResourceAsStream('/test-tutteli-gradle-plugin.gpg')
 
         settingsSetup.buildGradle << """
-        import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTargetWithTests
-
         ${settingsSetup.buildscriptWithKotlin(kotlinVersion)}
 
         project.ext.set('signing.password', '$gpgPassphrase')
@@ -567,27 +564,9 @@ class PublishPluginIntTest {
         }
 
         kotlin {
-           jvm { }
-           js(LEGACY) { browser { } }
-           def hostOs = System.getProperty("os.name")
-           def isMingwX64 = hostOs.startsWith("Windows")
-           KotlinNativeTargetWithTests nativeTarget
-           if (hostOs == "Mac OS X") nativeTarget = macosX64('native')
-           else if (hostOs == "Linux") nativeTarget = linuxX64("native")
-           else if (isMingwX64) nativeTarget = mingwX64("native")
-           else throw new GradleException("Host OS is not supported in Kotlin/Native.")
-
-
-           sourceSets {
-               commonMain { }
-               commonTest { }
-               jvmMain { }
-               jvmTest { }
-               jsMain { }
-               jsTest { }
-               nativeMain { }
-               nativeTest { }
-           }
+           jvm ()
+           js { browser() }
+           ${nativeTargetName()}()
         }
         ${publishingRepo()}
         """
@@ -635,11 +614,19 @@ class PublishPluginIntTest {
         def jsReleasePath = getReleasePath(settingsSetup, projectName + "-js", groupId, version)
         def (_2, jsPomName) = getPomInclFileNameAndAssertBasicPomProperties(jsReleasePath, projectName + "-js", groupId, version, githubUser, projectName)
         assertModuleExists(jsReleasePath, projectName + "-js", version)
-        assertJarsWithLicenseAndManifest(
-            jsReleasePath, projectName, version, repoUrl, null, kotlinVersion, jsPomName,
-            ".jar",
-            "-sources.jar",
-        )
+        if (kotlinVersion.startsWith("2")) {
+            assertArchiveWithAscAndHashes(jsReleasePath, jsPomName, ".klib")
+            assertJarsWithLicenseAndManifest(
+                    jsReleasePath, projectName, version, repoUrl, null, kotlinVersion, jsPomName,
+                    "-sources.jar",
+            )
+        } else {
+            assertJarsWithLicenseAndManifest(
+                    jsReleasePath, projectName, version, repoUrl, null, kotlinVersion, jsPomName,
+                    ".jar",
+                    "-sources.jar",
+            )
+        }
 
         def jvmReleasePath = getReleasePath(settingsSetup, projectName + "-jvm", groupId, version)
         def (_3, jvmPomName) = getPomInclFileNameAndAssertBasicPomProperties(jvmReleasePath, projectName + "-jvm", groupId, version, githubUser, projectName)
@@ -654,19 +641,15 @@ class PublishPluginIntTest {
             assertInZipFile(zipFile, 'jvmMain/ch/tutteli/atrium/a.kt')
         }
 
-
-        def nativeReleasePath = getReleasePath(settingsSetup, projectName + "-native", groupId, version)
-        def (_4, nativePomName) = getPomInclFileNameAndAssertBasicPomProperties(nativeReleasePath, projectName + "-native", groupId, version, githubUser, projectName)
-        assertModuleExists(nativeReleasePath, projectName + "-native", version)
+        def nativeProjectName = "$projectName-${nativeTargetName().toLowerCase()}"
+        def nativeReleasePath = getReleasePath(settingsSetup, nativeProjectName, groupId, version)
+        def (_4, nativePomName) = getPomInclFileNameAndAssertBasicPomProperties(nativeReleasePath, nativeProjectName, groupId, version, githubUser, projectName)
+        assertModuleExists(nativeReleasePath, nativeProjectName, version)
+        assertArchiveWithAscAndHashes(nativeReleasePath, nativePomName, ".klib")
         assertJarsWithLicenseAndManifest(
             nativeReleasePath, projectName, version, repoUrl, null, kotlinVersion, nativePomName,
             "-sources.jar",
         )
-        def klibName = "$projectName-native-${version}.klib"
-        Path path = nativeReleasePath.resolve(klibName)
-        assertTrue(Files.exists(path), "${path} not found")
-        assertAscWithHashesExistForFile(nativeReleasePath, klibName)
-
     }
 
     @Test
@@ -683,8 +666,6 @@ class PublishPluginIntTest {
         settingsSetup.gpgKeyRing << PublishPluginIntTest.class.getResourceAsStream('/test-tutteli-gradle-plugin.gpg')
 
         settingsSetup.buildGradle << """
-        import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTargetWithTests
-
         ${settingsSetup.buildscriptWithKotlin(KOTLIN_VERSION)}
         buildscript {
             dependencies {
@@ -717,39 +698,65 @@ class PublishPluginIntTest {
         }
 
         kotlin {
-           jvm { }
-           js(LEGACY) { browser { } }
-
-           sourceSets {
-               commonMain { }
-               commonTest { }
-               jvmMain { }
-               jvmTest { }
-               jsMain { }
-               jsTest { }
-           }
+           jvm()
+           js { browser() }
+           ${nativeTargetName()}()
         }
         ${publishingRepo()}
-        """
+        """.stripIndent()
         File license = new File(settingsSetup.tmp, 'LICENSE.txt')
         license << 'Copyright...'
         Path commonMain = Files.createDirectories(settingsSetup.tmpPath.resolve('src').resolve('commonMain'))
         Path commonTutteli = Files.createDirectories(commonMain.resolve("kotlin").resolve('ch').resolve('tutteli').resolve('atrium'))
         File commonKt = new File(commonTutteli.toFile(), 'common.kt')
-        commonKt << """package ch.tutteli.atrium
-                    /**
-                     * the variable a.
-                     */
-                    val a = 1"""
+        commonKt << """
+            package ch.tutteli.atrium
+            /**
+             * the variable a.
+             */
+            val a = 1
+            
+            /**
+             * an expected function.
+             */
+             expect fun expected(): String
+             """.stripIndent()
 
         Path jvmMain = Files.createDirectories(settingsSetup.tmpPath.resolve('src').resolve('jvmMain'))
         Path resources = Files.createDirectory(jvmMain.resolve('resources'))
         File txt = new File(resources.toFile(), 'a.txt')
         txt << 'dummy'
-        Path tutteli = Files.createDirectories(jvmMain.resolve('kotlin').resolve('ch').resolve('tutteli').resolve('atrium'))
-        File kt = new File(tutteli.toFile(), 'a.kt')
-        kt << 'package ch.tutteli.atrium'
+        Path jvmTutteli = Files.createDirectories(jvmMain.resolve('kotlin').resolve('ch').resolve('tutteli').resolve('atrium'))
+        File jvmKt = new File(jvmTutteli.toFile(), 'a.kt')
+        jvmKt << """
+            package ch.tutteli.atrium
+            /**
+             * the JVM implementation
+             */
+             actual fun expected(): String = "jvm"
+             """.stripIndent()
 
+        Path jsMain = Files.createDirectories(settingsSetup.tmpPath.resolve('src').resolve('jsMain'))
+        Path jsTutteli = Files.createDirectories(jsMain.resolve('kotlin').resolve('ch').resolve('tutteli').resolve('atrium'))
+        File jsKt = new File(jsTutteli.toFile(), 'a.kt')
+        jsKt << """
+            package ch.tutteli.atrium
+            /**
+             * the JS implementation
+             */
+            actual fun expected(): String = "js"
+            """.stripIndent()
+
+        Path nativeMain = Files.createDirectories(settingsSetup.tmpPath.resolve('src').resolve("nativeMain"))
+        Path nativeTutteli = Files.createDirectories(nativeMain.resolve('kotlin').resolve('ch').resolve('tutteli').resolve('atrium'))
+        File nativeKt = new File(nativeTutteli.toFile(), 'a.kt')
+        nativeKt << """
+            package ch.tutteli.atrium
+            /**
+             * the native implementation
+             */
+            actual fun expected(): String = "native"
+            """.stripIndent()
         //act
         def result = GradleRunner.create()
             .withProjectDir(settingsSetup.tmp)
@@ -768,6 +775,7 @@ class PublishPluginIntTest {
         assertJarsWithLicenseAndManifest(rootReleasePath, projectName, version, repoUrl, null, KOTLIN_VERSION, rootPomName,
             ".jar",
             "-sources.jar",
+            "-javadoc.jar"
         )
         Path path = rootReleasePath.resolve("$projectName-${version}-all.jar")
         assertFalse(Files.exists(path), "${path} found even though enableGranularSourceSetsMetadata is set to false")
@@ -775,12 +783,16 @@ class PublishPluginIntTest {
         def jsReleasePath = getReleasePath(settingsSetup, projectName + "-js", groupId, version)
         def (_2, jsPomName) = getPomInclFileNameAndAssertBasicPomProperties(jsReleasePath, projectName + "-js", groupId, version, githubUser, projectName)
         assertModuleExists(jsReleasePath, projectName + "-js", version)
+        assertArchiveWithAscAndHashes(jsReleasePath, jsPomName, ".klib")
         assertJarsWithLicenseAndManifest(
             jsReleasePath, projectName, version, repoUrl, null, KOTLIN_VERSION, jsPomName,
-            ".jar",
             "-sources.jar",
             "-javadoc.jar"
         )
+        new ZipFile(jsReleasePath.resolve("$projectName-js-$version-javadoc.jar").toFile()).withCloseable { zipFile ->
+            assertSomeZipEntryContains(zipFile, "the JS implementation")
+            assertNoZipEntryContains(zipFile, "the JVM implementation", "the native implementation")
+        }
 
         def jvmReleasePath = getReleasePath(settingsSetup, projectName + "-jvm", groupId, version)
         def (_3, jvmPomName) = getPomInclFileNameAndAssertBasicPomProperties(jvmReleasePath, projectName + "-jvm", groupId, version, githubUser, projectName)
@@ -791,9 +803,28 @@ class PublishPluginIntTest {
             "-sources.jar",
             "-javadoc.jar"
         )
-        new ZipFile(jvmReleasePath.resolve("$projectName-jvm-${version}-sources.jar").toFile()).withCloseable { zipFile ->
+        new ZipFile(jvmReleasePath.resolve("$projectName-jvm-$version-sources.jar").toFile()).withCloseable { zipFile ->
             assertInZipFile(zipFile, 'commonMain/ch/tutteli/atrium/common.kt')
             assertInZipFile(zipFile, 'jvmMain/ch/tutteli/atrium/a.kt')
+        }
+        new ZipFile(jvmReleasePath.resolve("$projectName-jvm-$version-javadoc.jar").toFile()).withCloseable { zipFile ->
+            assertSomeZipEntryContains(zipFile, "the JVM implementation")
+            assertNoZipEntryContains(zipFile, "the native implementation", "the JS implementation")
+        }
+
+        def nativeProjectName = projectName + "-" + nativeTargetName().toLowerCase()
+        def nativeReleasePath = getReleasePath(settingsSetup, nativeProjectName, groupId, version)
+        def (_4, nativePomName) = getPomInclFileNameAndAssertBasicPomProperties(nativeReleasePath, nativeProjectName, groupId, version, githubUser, projectName)
+        assertModuleExists(nativeReleasePath, nativeProjectName, version)
+        assertArchiveWithAscAndHashes(nativeReleasePath, nativePomName, ".klib")
+        assertJarsWithLicenseAndManifest(
+                nativeReleasePath, projectName, version, repoUrl, null, KOTLIN_VERSION, nativePomName,
+                "-sources.jar",
+                "-javadoc.jar"
+        )
+        new ZipFile(nativeReleasePath.resolve("$nativeProjectName-${version}-javadoc.jar").toFile()).withCloseable { zipFile ->
+            assertSomeZipEntryContains(zipFile, "the native implementation")
+            assertNoZipEntryContains(zipFile, "the JVM implementation", "the JS implementation")
         }
     }
 
@@ -818,7 +849,6 @@ class PublishPluginIntTest {
         """
     }
 
-
     private static void assertJarsWithLicenseAndManifest(Path releasePath, String projectName, String version, String repoUrl, String vendor, String kotlinVersion, String pomName, String... jarNameEndings) {
         def prefix = pomName.substring(0, pomName.length() - 4)
         jarNameEndings.each { jarNameEnding ->
@@ -828,19 +858,30 @@ class PublishPluginIntTest {
     }
 
     private static void assertJarWithLicenseAndManifest(Path releasePath, String jarName, String projectName, String version, String repoUrl, String vendor, String kotlinVersion) {
-        def jarPath = releasePath.resolve(jarName).toFile()
-        if (!jarPath.exists()) {
-            def list = []
-            jarPath.getParentFile().eachFileRecurse(FileType.FILES) { file ->
-                list << file
-            }
-            throw new AssertionError("$jarPath does not exist. Found following files in this folder: ${list.join("\n")}")
-        }
-        def zipFile = new ZipFile(jarPath)
+        def jarPath = releasePath.resolve(jarName)
+        assertReleaseFileExists(jarPath)
+        def zipFile = new ZipFile(jarPath.toFile())
         zipFile.withCloseable {
             def manifest = zipFile.getInputStream(findInZipFile(zipFile, 'META-INF/MANIFEST.MF')).text
             assertManifest(manifest, ': ', projectName, jarName, version, repoUrl, vendor, kotlinVersion)
             assertInZipFile(zipFile, 'LICENSE.txt')
+        }
+    }
+
+    private static assertArchiveWithAscAndHashes(Path releasePath, String pomName, String... archiveEndings) {
+        def prefix = pomName.substring(0, pomName.length() - 4)
+        archiveEndings.each { archiveEnding ->
+            assertAscWithHashesExistForFile(releasePath, prefix + archiveEnding)
+        }
+    }
+
+    private static assertReleaseFileExists(Path file) {
+        if (!Files.exists(file)) {
+            def siblings = []
+            file.parent.eachFileRecurse(FileType.FILES) { siblingFile ->
+                siblings << siblingFile
+            }
+            throw new AssertionError("$file does not exist. Found following files in its folder:\n${siblings.join("\n")}")
         }
     }
 
@@ -854,6 +895,36 @@ class PublishPluginIntTest {
         } as ZipEntry
     }
 
+    private static void assertSomeZipEntryContains(ZipFile zipFile, String searched) {
+        for (def zipEntry : zipFile.entries()) {
+            def entryStream = zipFile.getInputStream(zipEntry)
+            try {
+                if (new String(entryStream.readAllBytes(), UTF_8).contains(searched)) {
+                    return
+                }
+            } finally {
+                entryStream.close()
+            }
+        }
+        throw new AssertionError("Expected some entry in ${zipFile.getName()} to contain '${searched}', but none did!")
+    }
+
+    private static void assertNoZipEntryContains(ZipFile zipFile, String... searched) {
+        def findings = []
+        zipFile.stream().forEach { zipEntry ->
+            zipFile.getInputStream(zipEntry).withCloseable { zipEntryInput ->
+                def zipEntryString = new String(zipEntryInput.readAllBytes(), UTF_8)
+                for (def toCheck : searched) {
+                    if (zipEntryString.contains(toCheck)) {
+                        findings << " * ${zipEntry.name} contains '${toCheck}'"
+                    }
+                }
+            }
+        }
+        if (!findings.isEmpty()) {
+            throw new AssertionError("Expected no entry in ${zipFile.getName()} to contain any of ${searched}. But:\n${findings.join('\n')}")
+        }
+    }
 
     private static void assertManifest(String output, String separator, String projectName, String jarName, String version, String repoUrl, String vendor, String kotlinVersion) {
         assertTrue(output.contains("Implementation-Title$separator$projectName"), "$jarName contains: Implementation-Title$separator$projectName\nbut was:\n${output}")
@@ -902,13 +973,22 @@ class PublishPluginIntTest {
 
     private static void assertAscWithHashesExistForFile(Path releasePath, String fileName) {
         assertHashesExistForFile(releasePath, fileName)
-        assertTrue(Files.exists(releasePath.resolve(fileName + ".asc")), "asc for $fileName not found")
+        assertReleaseFileExists(releasePath.resolve(fileName + ".asc"))
         assertHashesExistForFile(releasePath, fileName + ".asc")
     }
 
     private static void assertHashesExistForFile(Path releasePath, String fileName) {
         ['md5', 'sha1', 'sha256', 'sha512'].forEach {
-            assertTrue(Files.exists(releasePath.resolve(fileName + "." + it)), "$it for $fileName not found")
+            assertReleaseFileExists(releasePath.resolve(fileName + "." + it))
         }
+    }
+
+    private static String nativeTargetName() {
+        def hostOs = System.getProperty("os.name")
+        def isMingwX64 = hostOs.startsWith("Windows")
+        if (hostOs == "Mac OS X") return "macosX64"
+        else if (hostOs == "Linux") return "linuxX64"
+        else if (isMingwX64) return "mingwX64"
+        else throw new AssertionError("unsupported OS for multiplatform tests!")
     }
 }

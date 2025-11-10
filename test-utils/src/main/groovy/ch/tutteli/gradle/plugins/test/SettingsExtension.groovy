@@ -4,9 +4,12 @@ import org.junit.jupiter.api.extension.*
 
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
+
+import static java.nio.file.Files.createDirectories
 
 class SettingsExtensionObject {
     public final Path tmpPath
@@ -64,7 +67,7 @@ class SettingsExtensionObject {
     }
 }
 
-class SettingsExtension implements ParameterResolver, AfterEachCallback, BeforeEachCallback {
+class SettingsExtension implements ParameterResolver {
 
     @Override
     boolean supportsParameter(ParameterContext parameterContext, ExtensionContext extensionContext) throws ParameterResolutionException {
@@ -74,7 +77,11 @@ class SettingsExtension implements ParameterResolver, AfterEachCallback, BeforeE
     @Override
     Object resolveParameter(ParameterContext parameterContext, ExtensionContext context) {
         return getStore(context).getOrComputeIfAbsent("settingsSetup") {
-            new SettingsExtensionObject(Files.createTempDirectory("myTests"))
+            def targetDir = Path.of("./build/test-output/" + parameterContext.declaringExecutable.name)
+            deleteRecursively(targetDir)
+            createDirectories(targetDir)
+            println("test folder: " + targetDir)
+            new SettingsExtensionObject(targetDir)
         }
     }
 
@@ -82,40 +89,28 @@ class SettingsExtension implements ParameterResolver, AfterEachCallback, BeforeE
         context.getStore(ExtensionContext.Namespace.create(this.class))
     }
 
+    static void deleteRecursively(Path tmpDir) {
+        try {
+            Files.walkFileTree(tmpDir, new SimpleFileVisitor<Path>() {
 
-    @Override
-    void beforeEach(ExtensionContext context) throws Exception {
-        // we also cleanup beforeEach just in case it did not work out as expected (we used to have shaky tests)
-        afterEach(context)
-    }
+                @Override
+                FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    return deleteAndContinue(file)
+                }
 
-    @Override
-    void afterEach(ExtensionContext context) throws Exception {
-        SettingsExtensionObject settingsSetup = getStore(context).get("settingsSetup") as SettingsExtensionObject
-        if (settingsSetup != null) {
-            println("tmp folder is: $settingsSetup.tmpPath")
-            deleteTmp(settingsSetup.tmpPath)
+                @Override
+                FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                    return deleteAndContinue(dir)
+                }
+
+                private FileVisitResult deleteAndContinue(Path path) throws IOException {
+                    Files.delete(path)
+                    return FileVisitResult.CONTINUE
+                }
+            })
+        } catch(NoSuchFileException ignored) {
+            // okay
         }
-    }
-
-    static Path deleteTmp(Path tmpDir) {
-        Files.walkFileTree(tmpDir, new SimpleFileVisitor<Path>() {
-
-            @Override
-            FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                return deleteAndContinue(file)
-            }
-
-            @Override
-            FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-                return deleteAndContinue(dir)
-            }
-
-            private FileVisitResult deleteAndContinue(Path path) throws IOException {
-                Files.delete(path)
-                return FileVisitResult.CONTINUE
-            }
-        })
     }
 
 }
